@@ -121,10 +121,28 @@ def scan_folder_filenames(folder_path):
     filenames = {f.name for f in folder_path.rglob('*') if f.is_file()}
     return filenames
 
-
+IGNORE_EXTENSIONS = {".pek", ".epr", ".cfa"}          # 代理檔、預覽檔
+IGNORE_SUBSTRINGS = {"_proxy", "_subclip"}            # 低畫質 Proxy / Subclip
+# 忽略字串（不區分大小寫）
+def is_ignored(filename: str) -> bool:
+    """
+    判斷該檔名是否屬於可忽略類型
+    - 以副檔名為主；補充部分常見字串（不區分大小寫）
+    """
+    lower = filename.lower()
+    if any(lower.endswith(ext) for ext in IGNORE_EXTENSIONS):
+        return True
+    if any(sub in lower for sub in IGNORE_SUBSTRINGS):
+        return True
+    return False
+# 比對專案檔案與資料夾中的檔案名稱
+# 添加檔案白名單.pek/.epr/proxy 
 def compare_filenames(project_file, folder_path):
-    project_files = parse_project_filenames(project_file)
-    actual_files = scan_folder_filenames(folder_path)
+    project_files_raw = parse_project_filenames(project_file)
+    actual_files_raw = scan_folder_filenames(folder_path)
+    # 依 ignore 規則過濾
+    project_files = {f for f in project_files_raw if not is_ignored(f)}
+    actual_files  = {f for f in actual_files_raw  if not is_ignored(f)}
     matched = sorted(project_files & actual_files)
     missing = sorted(project_files - actual_files)
     extra = sorted(actual_files - project_files)
