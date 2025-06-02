@@ -192,32 +192,47 @@ output_text.pack(padx=10, pady=10, fill='both', expand=True)
 # ----------------------------
 # 與 GUI 互動的函式
 # ----------------------------
-
+# --- 行 1：專案檔案選擇 ---
 def browse_prproj():
     path = filedialog.askopenfilename(filetypes=[
-        ("Premiere Projects", "*.prproj"),
-        ("After Effects Projects", "*.aepx"),
-        ("Compressed Premiere Projects", "*.prproj.gz"),
         ("所有支援的專案檔案", "{*.prproj} {*.aepx} {*.prproj.gz}")
     ])
     if path:
         prproj_entry.delete(0, tk.END)
         prproj_entry.insert(0, path)
 
-
+# --- 行 2：素材資料夾 ---
 def browse_folder():
     path = filedialog.askdirectory()
     if path:
         folder_entry.delete(0, tk.END)
         folder_entry.insert(0, path)
 
-
+# --- 行 3：報告輸出資料夾 ---
 def browse_output_folder():
     path = filedialog.askdirectory()
     if path:
         output_entry.delete(0, tk.END)
         output_entry.insert(0, path)
 
+# 從 .prproj 路徑中提取專案名稱
+def extract_project_label(prproj_path: str | Path) -> str:
+    """
+    回傳專案名稱（= '07_終極專案打包檔' 的上一層資料夾名稱）
+    若不符合預期結構，則退而求其次回傳 .prproj 檔名（去掉副檔名）
+    """
+    p = Path(prproj_path)
+
+    # (1) 正常情況：file → '07_終極專案打包檔' → <專案名稱>
+    if len(p.parents) >= 2 and "終極專案打包檔" in p.parent.name:
+        return p.parent.parent.name
+
+    # (2) 萬一路徑少一層或命名不同，就回傳上一層
+    if len(p.parents) >= 1:
+        return p.parent.name
+
+    # (3) 再不行就用檔名（不含副檔名）當 fallback
+    return p.stem
 
 # --- GUI 內警告提醒文字也一併修正 ---
 
@@ -230,17 +245,22 @@ def run_compare():
     if not prproj_path or not folder_path or not output_path or not uid:
         messagebox.showwarning("缺少輸入", "請確認已填入專案檔（.prproj / .aepx）、素材資料夾、輸出資料夾與 LINE UID")
         return
+    
+    # 先抓專案標籤，供後續 LINE 訊息與檔名使用
+    project_label = extract_project_label(prproj_path)
+    report_date = datetime.now().strftime("%Y-%m-%d")
 
     try:
         matched, missing, extra = compare_filenames(prproj_path, folder_path)
         output_text.delete(1.0, tk.END)
-        output_text.insert(tk.END, f"✅ 對應成功的素材：{len(matched)}\n")
+        #輸出專案名稱
+        output_text.insert(tk.END, f"[{project_label}]\n✅ 對應成功的素材：{len(matched)}\n")
         for f in matched:
             output_text.insert(tk.END, f"  ✅ {f}\n")
-        output_text.insert(tk.END, f"\n❌ 專案中使用但資料夾找不到：{len(missing)}\n")
+        output_text.insert(tk.END, f"[{project_label}]\n❌ 專案中使用但資料夾找不到：{len(missing)}\n")
         for f in missing:
             output_text.insert(tk.END, f"  ❌ {f}\n")
-        output_text.insert(tk.END, f"\n⚠️ 資料夾中多餘素材（未在專案引用）：{len(extra)}\n")
+        output_text.insert(tk.END, f"[{project_label}]\n⚠️ 資料夾中多餘素材（未在專案引用）：{len(extra)}\n")
         for f in extra:
             output_text.insert(tk.END, f"  ⚠️ {f}\n")
 
@@ -270,13 +290,13 @@ def run_compare():
 """ + '\n'.join(f"- {f}" for f in extra)
 
         # 寫入純文字檔案
-        txt_file = Path(output_path) / f"pr_compare_report_{report_date}.txt"
+        txt_file = Path(output_path) / f"Compare_report{project_label}_{report_date}_{report_date}.txt"
         txt_file.write_text(text_report, encoding="utf-8")
 
         messagebox.showinfo("報告完成", f"純文字報告儲存於：\n{txt_file}")
 
         # 傳送 LINE 精簡報告
-        summary_text = f"""📊 PR 素材比對結果（{report_date})\n✅ 對應成功素材數量：{len(matched)}\n\n❌ 專案中使用但資料夾找不到素材（共 {len(missing)} 筆）：\n""" + '\n'.join(f"- {f}" for f in missing)
+        summary_text = f"""📊 [{project_label}]素材比對結果（{report_date})\n✅ 對應成功素材數量：{len(matched)}\n\n❌ 專案中使用但資料夾找不到素材（共 {len(missing)} 筆）：\n""" + '\n'.join(f"- {f}" for f in missing)
         send_to_lambda(summary_text[:4000], uid)
 
         # 最後儲存設定（若有勾選）
@@ -284,7 +304,7 @@ def run_compare():
 
     except Exception as e:
         messagebox.showerror("錯誤", str(e))
-        error_msg = f"""❌ PR 素材比對失敗！\n\n🚨 錯誤訊息：\n{str(e)}"""
+        error_msg = f"""❌ [{project_label}] 素材比對失敗！\n\n🚨 錯誤訊息：\n{str(e)}"""
         send_to_lambda(error_msg, uid)
 
 # ----------------------------
