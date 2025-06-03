@@ -9,7 +9,7 @@ from datetime import datetime
 import requests
 import json
 import traceback
-
+import unicodedata
 # ----------------------------
 # 設定 / 常數
 # ----------------------------
@@ -68,6 +68,30 @@ def send_to_lambda(text: str, uid: str):
         print("✅ Lambda 回應：", response.text)
     except Exception as e:
         print("❌ Lambda 呼叫失敗：", e)
+# ----------------------------
+# --- 路徑 / 檔名正規化 
+# ----------------------------
+def _norm_name(name: str) -> str:
+    """
+    把檔名做三件事：
+    1) os.path.normcase → Windows 自動轉小寫、去掉大小寫敏感差異
+    2) unicodedata.normalize('NFC') → 合併全形 / 半形、重音符號等
+    3) 去除前後空白
+    """
+    name = unicodedata.normalize("NFC", name.strip())
+    return os.path.normcase(name)
+
+# --- 往父階層查找 Offline 屬性 ---------------------------
+def _has_offline_attr(elem) -> bool:
+    """
+    檢查當前 XML 節點自己或任何祖先是否帶 Offline=\"true\"
+    （Premiere 在 <Media>, <ProjectItem>, <ClipItem> 等層級皆可能標註）
+    """
+    while elem is not None:
+        if elem.get("Offline", "").lower() == "true":
+            return True
+        elem = elem.getparent() if hasattr(elem, "getparent") else None
+    return False
 
 # ----------------------------
 # 日誌設定（解析失敗時寫入 .log）
@@ -97,7 +121,8 @@ def _clean_to_filename(raw: str) -> str:
 
 def parse_project_filenames(project_path: str | os.PathLike) -> set[str]:
     """
-    根據副檔名，自動解析 .prproj（Premiere）或 .aepx（After Effects） 的素材檔案名稱
+    解析 .prproj / .aepx，回傳「線上素材檔名」集合（已做大小寫與 Unicode 正規化）
+    - 若某素材在 XML 裡被標記 Offline=\"true\"，代表 Premiere 已認定找不到 → 不列入比對
     """
     project_path = Path(project_path)
     suffix = project_path.suffix.lower()
@@ -112,7 +137,6 @@ def parse_project_filenames(project_path: str | os.PathLike) -> set[str]:
                 if magic == b'\x1f\x8b' else
                 f.read().decode('utf-8-sig', errors='ignore')
             )
-        root_xml = ET.fromstring(content)
 
     # .aepx 為純 XML（After Effects）
     elif suffix == ".aepx":
@@ -134,11 +158,13 @@ def parse_project_filenames(project_path: str | os.PathLike) -> set[str]:
     
     candidate_tags = {"Path", "FilePath", "ActualMediaFilePath", "AbsolutePath"}
     filenames: set[str] = set()
-    for elem in root_xml.iter():
+    for elem in iter_elems:
         if elem.text and any(t.lower() in elem.tag.lower() for t in candidate_tags):
+            if _has_offline_attr(elem):          # ← ❶ 若 Offline="true" 則跳過
+                continue
             name = _clean_to_filename(elem.text)
             if '.' in name:
-                filenames.add(name)
+                filenames.add(_norm_name(name))  # ← ❷ 正規化後加入集合
     return filenames
 
 def scan_folder_filenames(folder_path):
