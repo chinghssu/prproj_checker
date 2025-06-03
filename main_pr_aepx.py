@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 import requests
 import json
+import traceback
 
 # ----------------------------
 # 設定 / 常數
@@ -69,6 +70,19 @@ def send_to_lambda(text: str, uid: str):
         print("❌ Lambda 呼叫失敗：", e)
 
 # ----------------------------
+# 日誌設定（解析失敗時寫入 .log）
+# ----------------------------
+LOG_DIR = Path.home() / "pr_compare_logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+def write_error_log(project_label: str, exc: Exception) -> Path:
+    """把完整 Traceback 寫入 log，回傳檔案路徑"""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = LOG_DIR / f"{project_label}_{ts}.log"
+    log_path.write_text(traceback.format_exc(), encoding="utf-8")
+    return log_path
+
+# ----------------------------
 # .prproj 解析 + 比對工具
 # ----------------------------
 
@@ -105,8 +119,19 @@ def parse_project_filenames(project_path: str | os.PathLike) -> set[str]:
         root_xml = ET.parse(project_path).getroot()
 
     else:
-        raise ValueError(f"不支援的專案格式：{suffix}，請提供 .prproj 或 .aepx")
-
+        raise ValueError(f"不支援的專案格式：{suffix}")
+    
+    # 解析 XML：優先使用 lxml recover，失敗才退回內建 ET
+    try:
+        import lxml.etree as LET
+        parser = LET.XMLParser(recover=True)
+        root_xml = LET.fromstring(content.encode("utf-8"), parser=parser)
+        iter_elems = root_xml.iter()
+    except Exception:
+        # 若 lxml 不存在或仍失敗，改用內建 ET（可能丟 ParseError）
+        root_xml = ET.fromstring(content)
+        iter_elems = root_xml.iter()
+    
     candidate_tags = {"Path", "FilePath", "ActualMediaFilePath", "AbsolutePath"}
     filenames: set[str] = set()
     for elem in root_xml.iter():
@@ -275,10 +300,10 @@ def run_compare():
         output_text.insert(tk.END, f"[{project_label}]\n✅ 對應成功的素材：{len(matched)}\n")
         for f in matched:
             output_text.insert(tk.END, f"  ✅ {f}\n")
-        output_text.insert(tk.END, f"[{project_label}]\n❌ 專案中使用但資料夾找不到：{len(missing)}\n")
+        output_text.insert(tk.END, f"❌ 專案中使用但資料夾找不到：{len(missing)}\n")
         for f in missing:
             output_text.insert(tk.END, f"  ❌ {f}\n")
-        output_text.insert(tk.END, f"[{project_label}]\n⚠️ 資料夾中多餘素材（未在專案引用）：{len(extra)}\n")
+        output_text.insert(tk.END, f"⚠️ 資料夾中多餘素材（未在專案引用）：{len(extra)}\n")
         for f in extra:
             output_text.insert(tk.END, f"  ⚠️ {f}\n")
 
@@ -321,9 +346,20 @@ def run_compare():
         save_config()
 
     except Exception as e:
-        messagebox.showerror("錯誤", str(e))
-        error_msg = f"""❌ [{project_label}] 素材比對失敗！\n\n🚨 錯誤訊息：\n{str(e)}"""
-        send_to_lambda(error_msg, uid)
+        # 1) 將完整 traceback 寫入 log
+        log_path = write_error_log(project_label, e)
+        # 2) GUI 提示
+        messagebox.showerror(
+            "解析失敗",
+            f"專案「{project_label}」解析失敗，已寫入日誌：\n{log_path}"
+        )
+        # 3) 傳 LINE 簡訊（只帶錯誤摘要）
+        error_msg = (
+            f"[{project_label}] ❗ 專案解析失敗！\n"
+            f"🚨 錯誤：{e.__class__.__name__} - {e}\n"
+            f"🪵 詳細日誌已寫入：{log_path.name}"
+        )
+        send_to_lambda(error_msg[:4000], uid)
 
 # ----------------------------
 # 啟動時載入偏好
