@@ -72,14 +72,9 @@ def send_to_lambda(text: str, uid: str):
 # --- 路徑 / 檔名正規化 
 # ----------------------------
 def _norm_name(name: str) -> str:
-    """
-    把檔名做三件事：
-    1) os.path.normcase → Windows 自動轉小寫、去掉大小寫敏感差異
-    2) unicodedata.normalize('NFC') → 合併全形 / 半形、重音符號等
-    3) 去除前後空白
-    """
-    name = unicodedata.normalize("NFC", name.strip())
-    return os.path.normcase(name)
+    """僅做『大小寫不敏感』與 Unicode NFC 正規化"""
+    return unicodedata.normalize("NFC", name.strip()).casefold()
+
 
 # --- 往父階層查找 Offline 屬性 ---------------------------
 def _has_offline_attr(elem) -> bool:
@@ -167,10 +162,13 @@ def parse_project_filenames(project_path: str | os.PathLike) -> set[str]:
                 filenames.add(_norm_name(name))  # ← ❷ 正規化後加入集合
     return filenames
 
+# ---------------------------------------------------
+# 掃資料夾時就把檔名正規化
+# ---------------------------------------------------
 def scan_folder_filenames(folder_path):
     folder_path = Path(folder_path)
-    filenames = {f.name for f in folder_path.rglob('*') if f.is_file()}
-    return filenames
+    # 回傳 set；元素皆已 casefold
+    return {_norm_name(f.name) for f in folder_path.rglob('*') if f.is_file()}
 
 IGNORE_EXTENSIONS = {".pek", ".epr", ".cfa"}          # 代理檔、預覽檔
 IGNORE_SUBSTRINGS = {"_proxy", "_subclip"}            # 低畫質 Proxy / Subclip
@@ -188,15 +186,24 @@ def is_ignored(filename: str) -> bool:
     return False
 # 比對專案檔案與資料夾中的檔案名稱
 # 添加檔案白名單.pek/.epr/proxy 
+# ---------------------------------------------------
+# 3. 比對：用「正規化後 key」做集合運算，再映回原名
+# ---------------------------------------------------
 def compare_filenames(project_file, folder_path):
-    project_files_raw = parse_project_filenames(project_file)
-    actual_files_raw = scan_folder_filenames(folder_path)
-    # 依 ignore 規則過濾
-    project_files = {f for f in project_files_raw if not is_ignored(f)}
-    actual_files  = {f for f in actual_files_raw  if not is_ignored(f)}
-    matched = sorted(project_files & actual_files)
-    missing = sorted(project_files - actual_files)
-    extra = sorted(actual_files - project_files)
+    # ① 取原始集合並建立 key→原名 對照表
+    project_raw = parse_project_filenames(project_file)
+    disk_raw    = scan_folder_filenames(folder_path)  # 已正規化
+
+    project_map = {_norm_name(f): f for f in project_raw if not is_ignored(f)}
+    disk_map    = {_norm_name(f): f for f in disk_raw   if not is_ignored(f)}
+
+    # ② 用 key 交集 / 差集
+    project_keys = set(project_map)
+    disk_keys    = set(disk_map)
+
+    matched = sorted(project_map[k] for k in project_keys & disk_keys)
+    missing = sorted(project_map[k] for k in project_keys - disk_keys)
+    extra   = sorted(disk_map[k]    for k in disk_keys    - project_keys)
     return matched, missing, extra
 
 
